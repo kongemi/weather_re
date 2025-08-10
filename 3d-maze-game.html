@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D迷宫游戏演示</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background: #000;
+            font-family: Arial, sans-serif;
+        }
+        
+        #gameContainer {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+        
+        #debugPanel {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 15px;
+            border-radius: 5px;
+            font-size: 14px;
+            z-index: 100;
+            min-width: 200px;
+        }
+        
+        #instructions {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 15px;
+            border-radius: 5px;
+            font-size: 12px;
+            z-index: 100;
+        }
+        
+        #loadingScreen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: #000;
+            color: white;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 24px;
+            z-index: 200;
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <div id="loadingScreen">加载中...</div>
+        <div id="debugPanel">
+            <div><strong>士兵状态</strong></div>
+            <div>位置: <span id="position">0, 0, 0</span></div>
+            <div>旋转: <span id="rotation">0°</span></div>
+            <div>动画: <span id="animation">闲置</span></div>
+            <div>速度: <span id="speed">0</span></div>
+        </div>
+        <div id="instructions">
+            <strong>控制说明:</strong><br>
+            WASD - 移动<br>
+            鼠标 - 旋转视角<br>
+            滚轮 - 缩放
+        </div>
+    </div>
+
+    <!-- Three.js 核心库 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- GLTFLoader -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+    <!-- OrbitControls -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+    <script>
+        class MazeGame {
+            constructor() {
+                this.scene = null;
+                this.camera = null;
+                this.renderer = null;
+                this.controls = null;
+                this.soldier = null;
+                this.mixer = null;
+                this.clock = new THREE.Clock();
+                
+                // 迷宫参数
+                this.mazeSize = 16;
+                this.cellSize = 4;
+                this.wallHeight = 3;
+                this.walls = [];
+                this.wallBounds = [];
+                
+                // 士兵参数
+                this.soldierSpeed = 8;
+                this.soldierRadius = 0.5;
+                this.soldierPosition = new THREE.Vector3();
+                this.moveDirection = new THREE.Vector3();
+                this.isMoving = false;
+                
+                // 动画
+                this.idleAction = null;
+                this.runAction = null;
+                this.currentAction = null;
+                
+                // 输入控制
+                this.keys = {
+                    w: false,
+                    a: false,
+                    s: false,
+                    d: false
+                };
+                
+                this.init();
+            }
+            
+            async init() {
+                this.setupScene();
+                this.setupLighting();
+                this.generateMaze();
+                await this.loadSoldier();
+                this.setupControls();
+                this.setupEventListeners();
+                this.animate();
+                
+                // 隐藏加载屏幕
+                document.getElementById('loadingScreen').style.display = 'none';
+            }
+            
+            setupScene() {
+                // 创建场景
+                this.scene = new THREE.Scene();
+                this.scene.background = new THREE.Color(0x87CEEB);
+                
+                // 创建摄像机
+                this.camera = new THREE.PerspectiveCamera(
+                    75,
+                    window.innerWidth / window.innerHeight,
+                    0.1,
+                    1000
+                );
+                this.camera.position.set(0, 15, 15);
+                
+                // 创建渲染器
+                this.renderer = new THREE.WebGLRenderer({ antialias: true });
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+                this.renderer.shadowMap.enabled = true;
+                this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+                document.getElementById('gameContainer').appendChild(this.renderer.domElement);
+            }
+            
+            setupLighting() {
+                // 半球光源
+                const hemisphereLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6);
+                this.scene.add(hemisphereLight);
+                
+                // 定向光源
+                const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+                directionalLight.position.set(10, 20, 10);
+                directionalLight.castShadow = true;
+                directionalLight.shadow.mapSize.width = 2048;
+                directionalLight.shadow.mapSize.height = 2048;
+                directionalLight.shadow.camera.near = 0.5;
+                directionalLight.shadow.camera.far = 50;
+                directionalLight.shadow.camera.left = -25;
+                directionalLight.shadow.camera.right = 25;
+                directionalLight.shadow.camera.top = 25;
+                directionalLight.shadow.camera.bottom = -25;
+                this.scene.add(directionalLight);
+            }
+            
+            generateMaze() {
+                // 创建地面纹理
+                const groundTexture = this.createGroundTexture();
+                const groundMaterial = new THREE.MeshLambertMaterial({ map: groundTexture });
+                
+                // 创建地面
+                const groundGeometry = new THREE.PlaneGeometry(
+                    this.mazeSize * this.cellSize,
+                    this.mazeSize * this.cellSize
+                );
+                const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+                ground.rotation.x = -Math.PI / 2;
+                ground.receiveShadow = true;
+                this.scene.add(ground);
+                
+                // 创建墙体纹理
+                const wallTexture = this.createWallTexture();
+                const wallMaterial = new THREE.MeshLambertMaterial({ map: wallTexture });
+                
+                // 生成迷宫
+                for (let x = 0; x < this.mazeSize; x++) {
+                    for (let z = 0; z < this.mazeSize; z++) {
+                        let isWall = false;
+                        
+                        // 外圈固定为墙体
+                        if (x === 0 || x === this.mazeSize - 1 || z === 0 || z === this.mazeSize - 1) {
+                            isWall = true;
+                        }
+                        // 中心区域保持开放
+                        else if (x >= 6 && x <= 9 && z >= 6 && z <= 9) {
+                            isWall = false;
+                        }
+                        // 其余区域15%概率生成墙体
+                        else {
+                            isWall = Math.random() < 0.15;
+                        }
+                        
+                        if (isWall) {
+                            this.createWall(x, z, wallMaterial);
+                        }
+                    }
+                }
+            }
+            
+            createWall(x, z, material) {
+                const wallGeometry = new THREE.BoxGeometry(
+                    this.cellSize,
+                    this.wallHeight,
+                    this.cellSize
+                );
+                const wall = new THREE.Mesh(wallGeometry, material);
+                
+                const worldX = (x - this.mazeSize / 2) * this.cellSize + this.cellSize / 2;
+                const worldZ = (z - this.mazeSize / 2) * this.cellSize + this.cellSize / 2;
+                
+                wall.position.set(worldX, this.wallHeight / 2, worldZ);
+                wall.castShadow = true;
+                wall.receiveShadow = true;
+                
+                this.scene.add(wall);
+                this.walls.push(wall);
+                
+                // 创建碰撞边界框
+                const bounds = {
+                    minX: worldX - this.cellSize / 2,
+                    maxX: worldX + this.cellSize / 2,
+                    minZ: worldZ - this.cellSize / 2,
+                    maxZ: worldZ + this.cellSize / 2
+                };
+                this.wallBounds.push(bounds);
+            }
+            
+            createGroundTexture() {
+                const canvas = document.createElement('canvas');
+                canvas.width = 256;
+                canvas.height = 256;
+                const ctx = canvas.getContext('2d');
+                
+                // 棕色基调
+                ctx.fillStyle = '#8B4513';
+                ctx.fillRect(0, 0, 256, 256);
+                
+                // 添加网格线
+                ctx.strokeStyle = '#654321';
+                ctx.lineWidth = 2;
+                const gridSize = 32;
+                
+                for (let i = 0; i <= 256; i += gridSize) {
+                    ctx.beginPath();
+                    ctx.moveTo(i, 0);
+                    ctx.lineTo(i, 256);
+                    ctx.stroke();
+                    
+                    ctx.beginPath();
+                    ctx.moveTo(0, i);
+                    ctx.lineTo(256, i);
+                    ctx.stroke();
+                }
+                
+                const texture = new THREE.CanvasTexture(canvas);
+                texture.wrapS = THREE.RepeatWrapping;
+                texture.wrapT = THREE.RepeatWrapping;
+                texture.repeat.set(8, 8);
+                
+                return texture;
+            }
+            
+            createWallTexture() {
+                const canvas = document.createElement('canvas');
+                canvas.width = 128;
+                canvas.height = 128;
+                const ctx = canvas.getContext('2d');
+                
+                // 基础灰色
+                ctx.fillStyle = '#696969';
+                ctx.fillRect(0, 0, 128, 128);
+                
+                // 添加随机化图案
+                for (let i = 0; i < 50; i++) {
+                    const x = Math.random() * 128;
+                    const y = Math.random() * 128;
+                    const size = Math.random() * 8 + 2;
+                    
+                    ctx.fillStyle = `rgba(${Math.random() * 100 + 100}, ${Math.random() * 100 + 100}, ${Math.random() * 100 + 100}, 0.3)`;
+                    ctx.fillRect(x, y, size, size);
+                }
+                
+                return new THREE.CanvasTexture(canvas);
+            }
+            
+            async loadSoldier() {
+                return new Promise((resolve, reject) => {
+                    const loader = new THREE.GLTFLoader();
+                    
+                    // 使用一个简单的士兵模型URL（这里使用一个示例URL，实际使用时需要替换为有效的模型）
+                    const soldierUrl = 'https://threejs.org/examples/models/gltf/Soldier.glb';
+                    
+                    loader.load(
+                        soldierUrl,
+                        (gltf) => {
+                            this.soldier = gltf.scene;
+                            this.soldier.scale.setScalar(1.5);
+                            
+                            // 设置士兵位置在迷宫中心开放区域
+                            this.soldierPosition.set(0, 0, 0);
+                            this.soldier.position.copy(this.soldierPosition);
+                            
+                            // 启用阴影
+                            this.soldier.traverse((child) => {
+                                if (child.isMesh) {
+                                    child.castShadow = true;
+                                    child.receiveShadow = true;
+                                }
+                            });
+                            
+                            this.scene.add(this.soldier);
+                            
+                            // 设置动画
+                            if (gltf.animations && gltf.animations.length > 0) {
+                                this.mixer = new THREE.AnimationMixer(this.soldier);
+                                
+                                // 查找闲置和奔跑动画
+                                const idleClip = gltf.animations.find(clip => 
+                                    clip.name.toLowerCase().includes('idle') || 
+                                    clip.name.toLowerCase().includes('stand')
+                                ) || gltf.animations[0];
+                                
+                                const runClip = gltf.animations.find(clip => 
+                                    clip.name.toLowerCase().includes('run') || 
+                                    clip.name.toLowerCase().includes('walk')
+                                ) || gltf.animations[1] || gltf.animations[0];
+                                
+                                this.idleAction = this.mixer.clipAction(idleClip);
+                                this.runAction = this.mixer.clipAction(runClip);
+                                
+                                // 设置动画属性
+                                this.idleAction.setLoop(THREE.LoopRepeat);
+                                this.runAction.setLoop(THREE.LoopRepeat);
+                                
+                                // 开始播放闲置动画
+                                this.currentAction = this.idleAction;
+                                this.currentAction.play();
+                            }
+                            
+                            resolve();
+                        },
+                        (progress) => {
+                            console.log('Loading progress:', progress);
+                        },
+                        (error) => {
+                            console.error('Error loading soldier model:', error);
+                            // 如果模型加载失败，创建一个简单的立方体作为替代
+                            this.createFallbackSoldier();
+                            resolve();
+                        }
+                    );
+                });
+            }
+            
+            createFallbackSoldier() {
+                const geometry = new THREE.BoxGeometry(1, 2, 1);
+                const material = new THREE.MeshLambertMaterial({ color: 0x00ff00 });
+                this.soldier = new THREE.Mesh(geometry, material);
+                this.soldier.position.set(0, 1, 0);
+                this.soldier.castShadow = true;
+                this.soldier.receiveShadow = true;
+                this.scene.add(this.soldier);
+                
+                this.soldierPosition.copy(this.soldier.position);
+            }
+            
+            setupControls() {
+                this.controls = new THREE.OrbitControls(this.camera, this.renderer.domElement);
+                this.controls.enableDamping = true;
+                this.controls.dampingFactor = 0.05;
+                this.controls.maxPolarAngle = Math.PI / 2.2;
+                this.controls.minDistance = 5;
+                this.controls.maxDistance = 30;
+                
+                // 设置控制器目标为士兵位置
+                if (this.soldier) {
+                    this.controls.target.copy(this.soldier.position);
+                }
+            }
+            
+            setupEventListeners() {
+                // 键盘事件
+                document.addEventListener('keydown', (event) => {
+                    const key = event.key.toLowerCase();
+                    if (this.keys.hasOwnProperty(key)) {
+                        this.keys[key] = true;
+                    }
+                });
+                
+                document.addEventListener('keyup', (event) => {
+                    const key = event.key.toLowerCase();
+                    if (this.keys.hasOwnProperty(key)) {
+                        this.keys[key] = false;
+                    }
+                });
+                
+                // 窗口缩放事件
+                window.addEventListener('resize', () => {
+                    this.camera.aspect = window.innerWidth / window.innerHeight;
+                    this.camera.updateProjectionMatrix();
+                    this.renderer.setSize(window.innerWidth, window.innerHeight);
+                });
+            }
+            
+            updateMovement(deltaTime) {
+                if (!this.soldier) return;
+                
+                // 计算移动方向
+                this.moveDirection.set(0, 0, 0);
+                
+                // 获取摄像机的前向和右向向量（仅XZ平面）
+                const cameraDirection = new THREE.Vector3();
+                this.camera.getWorldDirection(cameraDirection);
+                cameraDirection.y = 0;
+                cameraDirection.normalize();
+                
+                const cameraRight = new THREE.Vector3();
+                cameraRight.crossVectors(cameraDirection, new THREE.Vector3(0, 1, 0));
+                cameraRight.normalize();
+                
+                if (this.keys.w) {
+                    this.moveDirection.add(cameraDirection);
+                }
+                if (this.keys.s) {
+                    this.moveDirection.sub(cameraDirection);
+                }
+                if (this.keys.a) {
+                    this.moveDirection.sub(cameraRight);
+                }
+                if (this.keys.d) {
+                    this.moveDirection.add(cameraRight);
+                }
+                
+                this.moveDirection.normalize();
+                this.isMoving = this.moveDirection.length() > 0;
+                
+                if (this.isMoving) {
+                    // 计算新位置
+                    const newPosition = this.soldierPosition.clone();
+                    newPosition.add(
+                        this.moveDirection.clone().multiplyScalar(this.soldierSpeed * deltaTime)
+                    );
+                    
+                    // 碰撞检测
+                    if (!this.checkCollision(newPosition)) {
+                        this.soldierPosition.copy(newPosition);
+                        this.soldier.position.copy(this.soldierPosition);
+                        
+                        // 更新士兵朝向
+                        const angle = Math.atan2(this.moveDirection.x, this.moveDirection.z);
+                        this.soldier.rotation.y = angle + Math.PI;
+                        
+                        // 更新轨道控制器目标
+                        this.controls.target.copy(this.soldier.position);
+                    }
+                }
+                
+                // 更新动画
+                this.updateAnimation();
+            }
+            
+            checkCollision(position) {
+                for (const bounds of this.wallBounds) {
+                    if (position.x + this.soldierRadius > bounds.minX &&
+                        position.x - this.soldierRadius < bounds.maxX &&
+                        position.z + this.soldierRadius > bounds.minZ &&
+                        position.z - this.soldierRadius < bounds.maxZ) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            
+            updateAnimation() {
+                if (!this.mixer || !this.idleAction || !this.runAction) return;
+                
+                const targetAction = this.isMoving ? this.runAction : this.idleAction;
+                
+                if (targetAction !== this.currentAction) {
+                    const previousAction = this.currentAction;
+                    this.currentAction = targetAction;
+                    
+                    // 渐入渐出效果
+                    if (previousAction) {
+                        previousAction.fadeOut(0.3);
+                    }
+                    this.currentAction.reset().fadeIn(0.3).play();
+                }
+            }
+            
+            updateDebugPanel() {
+                if (!this.soldier) return;
+                
+                const position = this.soldier.position;
+                const rotation = this.soldier.rotation.y * (180 / Math.PI);
+                const speed = this.isMoving ? this.soldierSpeed : 0;
+                const animationName = this.isMoving ? '奔跑' : '闲置';
+                
+                document.getElementById('position').textContent = 
+                    `${position.x.toFixed(2)}, ${position.y.toFixed(2)}, ${position.z.toFixed(2)}`;
+                document.getElementById('rotation').textContent = `${rotation.toFixed(1)}°`;
+                document.getElementById('animation').textContent = animationName;
+                document.getElementById('speed').textContent = speed.toFixed(1);
+            }
+            
+            animate() {
+                requestAnimationFrame(() => this.animate());
+                
+                const deltaTime = this.clock.getDelta();
+                
+                // 更新动画混合器
+                if (this.mixer) {
+                    this.mixer.update(deltaTime);
+                }
+                
+                // 更新移动
+                this.updateMovement(deltaTime);
+                
+                // 更新控制器
+                this.controls.update();
+                
+                // 更新调试面板
+                this.updateDebugPanel();
+                
+                // 渲染场景
+                this.renderer.render(this.scene, this.camera);
+            }
+        }
+        
+        // 启动游戏
+        window.addEventListener('DOMContentLoaded', () => {
+            new MazeGame();
+        });
+    </script>
+</body>
+</html>

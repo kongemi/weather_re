@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>多米诺骨牌连锁反应游戏</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #000;
+            color: white;
+            font-family: 'Arial', sans-serif;
+            overflow: hidden;
+            user-select: none;
+        }
+
+        #gameContainer {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        #gameCanvas {
+            display: block;
+            cursor: crosshair;
+        }
+
+        .controls {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 20px;
+            border-radius: 10px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            min-width: 300px;
+        }
+
+        .control-group {
+            margin-bottom: 15px;
+        }
+
+        .control-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 14px;
+            color: #fff;
+        }
+
+        .slider {
+            width: 100%;
+            height: 5px;
+            border-radius: 5px;
+            background: #333;
+            outline: none;
+            -webkit-appearance: none;
+        }
+
+        .slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #fff;
+            cursor: pointer;
+        }
+
+        .slider::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #fff;
+            cursor: pointer;
+            border: none;
+        }
+
+        .button {
+            background: linear-gradient(45deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            color: white;
+            padding: 10px 20px;
+            margin: 5px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s ease;
+        }
+
+        .button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .button:active {
+            transform: translateY(0);
+        }
+
+        .counter {
+            font-size: 18px;
+            font-weight: bold;
+            color: #fff;
+            text-align: center;
+            padding: 10px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 5px;
+            margin-top: 10px;
+        }
+
+        .instructions {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(255, 255, 255, 0.05);
+            padding: 12px;
+            border-radius: 8px;
+            backdrop-filter: blur(5px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            max-width: 250px;
+            opacity: 0.8;
+            pointer-events: none;
+        }
+
+        .instructions h3 {
+            margin-bottom: 10px;
+            color: #fff;
+        }
+
+        .instructions ul {
+            list-style: none;
+            padding: 0;
+        }
+
+        .instructions li {
+            margin-bottom: 5px;
+            font-size: 12px;
+            color: #ccc;
+        }
+
+        .value-display {
+            display: inline-block;
+            margin-left: 10px;
+            font-weight: bold;
+            color: #667eea;
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <canvas id="gameCanvas"></canvas>
+        
+        <div class="controls">
+            <h2>多米诺骨牌游戏</h2>
+            
+            <div class="control-group">
+                <label for="spacingSlider">骨牌间距: <span id="spacingValue" class="value-display">45px</span></label>
+                <input type="range" id="spacingSlider" class="slider" min="30" max="80" value="45">
+            </div>
+            
+            <div class="control-group">
+                <button class="button" id="placeRowBtn">摆放一排骨牌</button>
+                <button class="button" id="startReactionBtn">启动连锁反应</button>
+                <button class="button" id="resetBtn">重置游戏</button>
+            </div>
+            
+            <div class="counter">
+                倒下的骨牌: <span id="fallenCount">0</span>
+            </div>
+        </div>
+        
+        <div class="instructions">
+            <h3>游戏说明</h3>
+            <ul>
+                <li>• 左键点击空白处添加骨牌</li>
+                <li>• 拖拽骨牌调整位置</li>
+                <li>• 右键点击删除骨牌</li>
+                <li>• 使用滑块调整间距</li>
+                <li>• 点击按钮快速操作</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        // Matter.js 模块
+        const { Engine, Render, World, Bodies, Body, Mouse, MouseConstraint, Events, Vector } = Matter;
+
+        // 游戏变量
+        let engine, render, world, mouse, mouseConstraint;
+        let dominoes = [];
+        let fallenCount = 0;
+        let spacing = 45;
+        let isDragging = false;
+        let ground;
+
+        // 初始化游戏
+        function initGame() {
+            // 创建引擎
+            engine = Engine.create();
+            world = engine.world;
+            engine.world.gravity.y = 1;
+
+            // 获取画布
+            const canvas = document.getElementById('gameCanvas');
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+
+            // 创建渲染器
+            render = Render.create({
+                canvas: canvas,
+                engine: engine,
+                options: {
+                    width: window.innerWidth,
+                    height: window.innerHeight,
+                    wireframes: false,
+                    background: '#000000',
+                    showAngleIndicator: false,
+                    showVelocity: false
+                }
+            });
+
+            // 创建地面
+            ground = Bodies.rectangle(window.innerWidth / 2, window.innerHeight - 25, window.innerWidth, 50, {
+                isStatic: true,
+                render: {
+                    fillStyle: '#666666'
+                }
+            });
+            World.add(world, ground);
+
+            // 创建鼠标控制
+            mouse = Mouse.create(render.canvas);
+            mouseConstraint = MouseConstraint.create(engine, {
+                mouse: mouse,
+                constraint: {
+                    stiffness: 0.2,
+                    render: {
+                        visible: false
+                    }
+                }
+            });
+            World.add(world, mouseConstraint);
+
+            // 启动引擎和渲染器
+            Engine.run(engine);
+            Render.run(render);
+
+            // 设置事件监听
+            setupEventListeners();
+        }
+
+        // 创建多米诺骨牌
+        function createDomino(x, y) {
+            const domino = Bodies.rectangle(x, y, 12, 50, {
+                density: 0.015,
+                friction: 0.6,
+                frictionStatic: 0.8,
+                restitution: 0.2,
+                render: {
+                    fillStyle: '#ffffff',
+                    strokeStyle: '#cccccc',
+                    lineWidth: 1
+                }
+            });
+
+            domino.isFallen = false;
+            domino.isDomino = true;
+            dominoes.push(domino);
+            World.add(world, domino);
+            return domino;
+        }
+
+        // 删除骨牌
+        function removeDomino(domino) {
+            const index = dominoes.indexOf(domino);
+            if (index > -1) {
+                dominoes.splice(index, 1);
+                World.remove(world, domino);
+            }
+        }
+
+        // 摆放一排骨牌
+        function placeRow() {
+            const startX = 200;
+            const y = window.innerHeight - 100;
+            const count = Math.floor((window.innerWidth - 400) / spacing);
+
+            for (let i = 0; i < count; i++) {
+                createDomino(startX + i * spacing, y);
+            }
+        }
+
+        // 启动连锁反应
+        function startReaction() {
+            if (dominoes.length > 0) {
+                const firstDomino = dominoes[0];
+                Body.applyForce(firstDomino, firstDomino.position, { x: 0.08, y: 0 });
+            }
+        }
+
+        // 重置游戏
+        function resetGame() {
+            dominoes.forEach(domino => {
+                World.remove(world, domino);
+            });
+            dominoes = [];
+            fallenCount = 0;
+            updateCounter();
+        }
+
+        // 检查骨牌是否倒下
+        function checkFallenDominoes() {
+            dominoes.forEach(domino => {
+                if (!domino.isFallen) {
+                    const angle = Math.abs(domino.angle);
+                    if (angle > Math.PI / 6) { // 30度
+                        domino.isFallen = true;
+                        fallenCount++;
+                        updateCounter();
+                    }
+                }
+            });
+        }
+
+        // 更新计数器
+        function updateCounter() {
+            document.getElementById('fallenCount').textContent = fallenCount;
+        }
+
+        // 设置事件监听
+        function setupEventListeners() {
+            const canvas = render.canvas;
+
+            // 鼠标点击事件
+            canvas.addEventListener('mousedown', (e) => {
+                if (e.button === 0) { // 左键
+                    const rect = canvas.getBoundingClientRect();
+                    const x = e.clientX - rect.left;
+                    const y = e.clientY - rect.top;
+
+                    // 检查是否点击在现有骨牌上
+                    const bodies = Matter.Query.point(world.bodies, { x, y });
+                    const clickedDomino = bodies.find(body => body.isDomino);
+
+                    if (!clickedDomino && y < window.innerHeight - 80) {
+                        createDomino(x, y);
+                    }
+                }
+            });
+
+            // 右键删除
+            canvas.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                const rect = canvas.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+
+                const bodies = Matter.Query.point(world.bodies, { x, y });
+                const clickedDomino = bodies.find(body => body.isDomino);
+
+                if (clickedDomino) {
+                    removeDomino(clickedDomino);
+                }
+            });
+
+            // 按钮事件
+            document.getElementById('placeRowBtn').addEventListener('click', placeRow);
+            document.getElementById('startReactionBtn').addEventListener('click', startReaction);
+            document.getElementById('resetBtn').addEventListener('click', resetGame);
+
+            // 滑块事件
+            const spacingSlider = document.getElementById('spacingSlider');
+            const spacingValue = document.getElementById('spacingValue');
+            
+            spacingSlider.addEventListener('input', (e) => {
+                spacing = parseInt(e.target.value);
+                spacingValue.textContent = spacing + 'px';
+            });
+
+            // 窗口大小调整
+            window.addEventListener('resize', () => {
+                render.canvas.width = window.innerWidth;
+                render.canvas.height = window.innerHeight;
+                render.options.width = window.innerWidth;
+                render.options.height = window.innerHeight;
+                
+                // 更新地面
+                World.remove(world, ground);
+                ground = Bodies.rectangle(window.innerWidth / 2, window.innerHeight - 25, window.innerWidth, 50, {
+                    isStatic: true,
+                    render: {
+                        fillStyle: '#666666'
+                    }
+                });
+                World.add(world, ground);
+            });
+
+            // 游戏循环
+            setInterval(() => {
+                checkFallenDominoes();
+            }, 100);
+        }
+
+        // 启动游戏
+        window.addEventListener('load', initGame);
+    </script>
+</body>
+</html>
